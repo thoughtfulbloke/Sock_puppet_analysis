@@ -1,0 +1,573 @@
+
+
+```{r setup, include=FALSE}
+# document creation configuration, not part of the analysis
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(fig.width = 6)
+```
+
+# Learning from a Sock Puppet cluster
+
+This is the easy to read, no code write-up of the analysis (which I assume you are viewing online), to see the embedded code that generated this analysis, have a look at the README.rmd version of the file in the same github repo. For offline viewing of the easy to read version, there is also README.pdf in the github archive.
+
+Taking a recent example of clear sock-puppet accounts among New Zealand fringe Twitter, I am using the opportunity to test how the sock puppetry shows up when approaching the data through various analysis lens, and how the techniques employed reflect assumptions about the data being looked for.
+
+This was a case of sock puppet accounts identified through detail content investigation and domain expertise, I am trying non-content based methods.
+
+There are three specific accounts I am measuring the techniques against:
+
+1) Sock1 a clearly identified sock puppet 
+2) Sock2 a clearly identified sock puppet
+3) Suspect an account linked to both sock puppets in the content posted.
+
+(these are all pseudonyms, as is every other account mentioned in this- no real screen_names are revealed in this analysis, just concentrate on the techniques employed)
+
+There are a series of problem specific assumptions I can make about sock puppet accounts set up to amplify a message or account:
+
+1) The sock puppet owner only has limited daily time to tweet, so the unavailable to be on the Internet times will be similar between sock puppet accounts.
+
+2) Most followers of a sock puppet accounts do not know they are a sock puppet (assumption sensitive to number of followers)
+
+3) Most followers of a sock puppet account are interested in the content of that account, so interested in similar content (I think this holds regardless if people are following the account because they like the content .
+
+4) The person behind the sock puppet account is creating multiple identities to amplify content, so those multiple identities will have similar content (only for those accounts using sock puppets to amplify, rather than to stir up a fight with opposing sock puppets)
+
+Given those assumptions:
+
+Sock puppetry occurs in a context, so analysing the context reveals the sock puppetry. People who follow a sock puppet may be more likely to follow accounts from the same source, so I can use that following to trace other sock puppet instances.
+
+```{r needed_R_libraries, warning=FALSE, message=FALSE}
+library(dplyr)
+library(rtweet)
+library(ggplot2)
+library(ggthemes)
+library(lubridate)
+library(scales)
+library(tidyr)
+library(ggrepel)
+library(ggbeeswarm)
+library(patchwork)
+```
+
+An account has followers that see content from that account on their timeline, this is the core group to whom content is amplified. Using the API, I can download the full context of Sock1. This code is not included here, but is at https://gist.github.com/thoughtfulbloke/e93e184129823b51f81998fbf8f0c1c4
+
+```{r}
+sock1_followers <- read_twitter_csv("twitter_accounts/Sock1/X2020_02_14_11_04_51FL.csv")
+```
+
+Taking the 955 followers, I can download the friends lists of those accounts. Because of following the sock puppet these accounts have a high chance of also following related sock puppet accounts.
+
+While the 955 account friends lists are 100 MB, it does take nearly 16 hours of computer time to download, as the API limits friends lists downloads to 15 downloads (each list of 5000 or less most recent friends) of lists per 15 minutes.
+
+```{r, eval=FALSE}
+## want to make this a one off gather, but need to allow for network problems and
+## restarting if there is a problem, so given a friends_of_followers folder to
+## store the results, the script is downloading all the freinds lists not already
+## in the folder
+if(!dir.exists("friends_of_followers")){dir.create("friends_of_followers")}
+alreadyDL <- gsub("_FR\\.csv$","", list.files("friends_of_followers"))
+collected_all <- TRUE
+if(!collected_all){
+cross_index <- sock1_followers %>% filter(!(user_id %in% alreadyDL))
+for (target_account in cross_index$user_id){
+    savepath <- paste0("friends_of_followers/", target_account,"_FR.csv")
+    rl <- rate_limit()
+    fl <- rl %>% filter(query == "friends/ids")
+    if(fl$remaining == 0){Sys.sleep(ceiling(as.numeric(fl$reset)*60 + 1))}
+    result <- tryCatch(get_friends(target_account, retryonratelimit = TRUE),
+                       error = function(e) NULL, warning = function(w) NULL)
+    if(!is.null(result)){
+      write_as_csv(result, file_name=savepath)
+    }
+}
+}
+# some friends list likely will not exist or be not public, so do not expect 
+# a full complement of lists
+```
+
+```{r read_in_all_friends_lists}
+## read in all friends lists
+## technical note, just using read.csv rather than rtweet::read_twitter_csv to preserve user as chr
+all_friends <- bind_rows(lapply(list.files("friends_of_followers", full.names = TRUE), read.csv,
+                                colClasses = "character")) %>% mutate(user_id = gsub("^x","",user_id))
+```
+
+The 925 friends lists contain a total of 1,964,459 befriended accounts. Before doing anything more complex, it is easy to check the amount of Sock1's friend list that each other friend's list contains coverage of:
+
+```{r}
+sock1_friends <- read.csv("twitter_accounts/Sock1/X2020_02_14_11_04_51FR.csv", 
+                          colClasses = "character") %>% mutate(user_id = gsub("^x","",user_id))
+coverage <- all_friends %>% group_by(user) %>% 
+  summarise(Sock1_coverage_percent = floor(100 * sum(user_id %in% sock1_friends$user_id)/
+                                             nrow(sock1_friends))) %>%
+  arrange(desc(Sock1_coverage_percent)) 
+```
+
+```{r, fig.height=7, fig.width=6}
+ggplot(coverage, aes(x=Sock1_coverage_percent)) + 
+  geom_dotplot(binwidth=1, method="histodot", dotsize=0.36) + theme_tufte() +
+  annotate("text", x=54,y=.08,label="Sock2", colour="red", alpha=0.7) + 
+  annotate("text", x=71,y=.08,label="suspect", colour="red", alpha=0.7) +
+  annotate("line", x=c(54,54),y=c(.06,.02), colour="red", alpha=0.7) +
+  annotate("line", x=c(71,71),y=c(.06,.02), colour="red", alpha=0.7) +
+  xlab("Percentage of Sock1's friends mirrored in other accounts friends lists, n=925") +
+  theme(axis.line=element_blank(), axis.text.y=element_blank(),axis.ticks.y=element_blank(),
+          axis.title.y=element_blank())
+```
+
+Overlap of context does seem to be a useful technique in and of itself, but for the purposes of analysis I would like to assume that the related accounts were less clear in the data, and see what more can be done.
+
+If one aggregates the befriended accounts across all friends lists, it generates a crowd-sourced recommender like list of the form "if you were interested in Sock1, then...". As any particular account can only befriend another once, spread of names is the only measure of popularity, rather than any intensity measure (at this stage).
+
+```{r}
+agg_friends <- all_friends %>% count(user_id, sort=TRUE)
+```
+
+Which gives a distribution of being befriended.
+
+```{r, fig.width=6}
+frlog <- agg_friends %>% rename(friendcount = n) %>% count(friendcount) %>% mutate(log2 = log2(n+1))
+ggplot(frlog, aes(x=friendcount, xend=friendcount, yend=log2)) + geom_segment(y=0) +
+  ylab("log2(number of accounts befriended +1)") + xlab("number of befrienders") +
+  theme_tufte()
+```
+
+Because I am writing this for a technical audience I will just not I was using a log2(n+1) transformation to aid visibility when looking at the graph to see the overall pattern, and note nothing very interesting seems to be going on in the graph among accounts befriended by less than 125 of Sock1's followers. So as a next step I zoom the graph into the high (greater than 125) end with less data transformation.
+
+```{r, fig.width=6}
+frnolog <- agg_friends %>% rename(friendcount = n) %>% filter(friendcount > 125) %>% 
+  count(friendcount)
+ggplot(frnolog, aes(x=friendcount, xend=friendcount, yend=n)) + geom_segment(y=0) +
+  ylab("number of accounts befriended") + xlab("number of befrienders") +
+  annotate("text", x=410,y=3,label="Sock2", colour="red", alpha=0.7) + 
+  annotate("line", x=c(410,410),y=c(2.5,1.5), colour="red", alpha=0.7) +
+  annotate("text", x=560,y=3,label="suspect", colour="red", alpha=0.7) +
+  annotate("line", x=c(560,560),y=c(2.5,1.5), colour="red", alpha=0.7) +
+  theme_tufte()
+```
+
+Picking up more data is going to be another small human time/ high computer time process, so I am going to try and minimise the waiting time by exploring the data to make a few assumptions.
+
+```{r}
+friend200 <- agg_friends %>% rename(friendcount = n) %>% filter(friendcount > 200)
+
+```
+
+The long tail for the number of befriendings seems to begin about with about 200 shared followers, and the 141 accounts that reach this level is a much more manageable amount in terms of time.
+
+```{r eval=FALSE}
+if(!file.exists("added_info.csv")){
+added_info <- lookup_users(friend200$user_id) %>% inner_join(friend200, by="user_id") %>%
+  arrange(desc(friendcount))
+write_as_csv(added_info, file_name = "added_info.csv")
+}
+```
+
+However, this set of commonly followed accounts also includes general international alt-right accounts commonly followed by the fringe as well as local accounts. As these are major international accounts, a threshold of 50000 followers is a useful split for filtering these out, and focusing on the local.
+
+```{r fig.height=3, fig.width=6}
+added_info <- read_twitter_csv("added_info.csv")
+local <- added_info %>% filter(followers_count < 50000) %>% select(screen_name, friendcount)
+locnolog <- local %>% count(friendcount)
+ggplot(locnolog, aes(x=friendcount, xend=friendcount, yend=n)) + geom_segment(y=0) +
+  ylab("number of accounts befriended") + xlab("number of befrienders") + 
+  annotate("text", x=410,y=1.2,label="Sock2", colour="red", alpha=0.7) + 
+  annotate("line", x=c(410,410),y=c(1.13,1.05), colour="red", alpha=0.7) +
+  annotate("text", x=560,y=1.2,label="suspect", colour="red", alpha=0.7) +
+  annotate("line", x=c(560,560),y=c(1.13,1.05), colour="red", alpha=0.7) +
+  annotate("text", x=860,y=1.2,label="Sock1", colour="red", alpha=0.7) +
+  annotate("line", x=c(860,860),y=c(1.13,1.05), colour="red", alpha=0.7) +
+  scale_y_continuous(limits=c(0,6), breaks=c(0,1,3)) + theme_tufte()
+```
+
+Once, again the sock puppet related accounts stand out, suggesting something useful can be done with this idea.
+
+Another approach, is that in order to be a amplifying sock puppet, the sock puppet must be amplifying. This should be reflected in the behaviour of the likes and retweets.
+
+```{r}
+RTs <- read_twitter_csv("twitter_accounts/Sock1/X2020_02_14_11_04_51TL.csv") %>%
+  filter(is_retweet) %>% count(retweet_user_id, sort=TRUE) %>% 
+  rename(user_id = retweet_user_id, rted=n)
+LKs <- read_twitter_csv("twitter_accounts/Sock1/X2020_02_14_11_04_51LK.csv") %>%
+  count(user_id, sort=TRUE) %>% 
+  rename(lked=n)
+boosting <- RTs %>% inner_join(LKs, by = "user_id")
+```
+
+```{r fig.width=6}
+ggplot(boosting, aes(rted,lked)) + geom_point() + xlab("Retweets (raw count)") + 
+  ylab("Likes awarded (raw count)")  +
+  annotate("text", x=170,y=190,label="Sock2", colour="red", alpha=0.7) +
+  annotate("text", x=570,y=630,label="suspect", colour="red", alpha=0.7) +
+  annotate("text", x=120,y=60,label="Sock1", colour="red", alpha=0.7) +
+  theme_tufte()
+```
+
+Likes awarded by Sock1, and retweets by Sock1 are clearly not independent, and both together, or individually, strongly favour the three sock puppet related accounts.
+
+Up until now, this has been establishing that Sock1 is similar in context to the suspect account and Sock2, and is boosting these accounts, but it has not been established it is a sock puppet (a false identity account). This requires comparison between accounts, and to keep it computational possible, I can used the boosted accounts as a starting pool. Downloading the short-list of the 40 most boosted accounts takes around a hour, but is a human practical set size. Again, this is using the code from https://gist.github.com/thoughtfulbloke/e93e184129823b51f81998fbf8f0c1c4 with shortlist$user_id.
+
+
+```{r}
+local_tz = "Pacific/Auckland"
+```
+
+To do this, I am focusing on what indicators in the time of posting say about the poster's behaviour.
+
+```{r}
+# reading in and assigning psuedonyms for the data I am using in this section, then keeping only the needed fields for this section
+
+timeline_paths <- list.files("twitter_accounts", recursive = TRUE, pattern="TL\\.csv",
+                             full.names = TRUE)
+timelines <- bind_rows(lapply(timeline_paths, read_twitter_csv))
+comparitor <- "Sock1"
+pseudonyms <- read.csv("pseudonyms.csv", stringsAsFactors = FALSE)
+
+pseudomised <- timelines %>% inner_join(pseudonyms, by="screen_name") %>% 
+  select(-screen_name) %>% rename(screen_name = pseudonym) %>% 
+  select(screen_name, created_at, sortorder) 
+
+```
+
+One way of presenting time is as a continuous line, one continuous variable measured to the level of a second.
+
+```{r, fig.height=1, fig.width=6}
+# find from when there is data for both accounts, to make an even start on the graph
+left_limit_calc <- pseudomised %>% 
+  filter(screen_name == "Sock1" | screen_name == "Sock2") %>%
+  mutate(created_at = ymd_hms(created_at, tz="UTC")) %>%
+  group_by(screen_name) %>%
+  summarise(minUTC = min(created_at)) %>%
+  summarise(left_lim = max(minUTC))
+
+pseudomised %>% 
+  filter(screen_name == "Sock1" | screen_name == "Sock2") %>%
+  mutate(created_at = ymd_hms(created_at, tz="UTC"),
+         created_local = with_tz(created_at, tz=local_tz)) %>%
+  filter(created_at >= left_limit_calc$left_lim) %>%
+  ggplot(aes(x = created_local, y=factor(screen_name), colour=screen_name)) + geom_point(size=0.2, alpha=0.3) +
+  theme_tufte() + ylab("account") + xlab("second of Tweet creation (NZ timezone)") +
+  scale_colour_colorblind()
+```
+
+This is reasonably clear at identifying similarities when there are similar numbers of posts, but harder to judge the level of similarity when the sample sizes are different.
+
+```{r, fig.height=2}
+# find from when there is data for both accounts, to make an even start on the graph
+left_limit_calc <- pseudomised %>% 
+  filter(screen_name %in% c("Sock1", "Sock2","suspect","unsuspicious14")) %>%
+  mutate(created_at = ymd_hms(created_at, tz="UTC")) %>%
+  group_by(screen_name) %>%
+  summarise(minUTC = min(created_at)) %>%
+  summarise(left_lim = max(minUTC))
+
+pseudomised %>% 
+  filter(screen_name %in% c("Sock1", "Sock2","suspect","unsuspicious14")) %>%
+  mutate(created_at = ymd_hms(created_at, tz="UTC"),
+         created_local = with_tz(created_at, tz=local_tz)) %>%
+  filter(created_at >= left_limit_calc$left_lim) %>%
+  ggplot(aes(x = created_local, y=factor(screen_name), colour=screen_name)) + geom_point(size=0.2, alpha=0.3) +
+  theme_tufte() + ylab("account") + xlab("second of Tweet creation (NZ timezone)") +
+  scale_colour_colorblind()
+```
+
+If looking at individual events over time, it can be clearer to model the data as events within a day over a series of discrete days.
+
+```{r fig.height=5}
+graphlimits = c(ISOdatetime(2020,2,22,0,0,0,tz = local_tz), 
+                ISOdatetime(2020,2,23,0,0,0,tz = local_tz))
+graphbreaks = c(ISOdatetime(2020,2,22,6,0,0,tz = local_tz), 
+                ISOdatetime(2020,2,22,12,0,0,tz = local_tz), 
+                ISOdatetime(2020,2,22,18,0,0,tz = local_tz), 
+                ISOdatetime(2020,2,23,0,0,0,tz = local_tz))
+# artifically moving all events to act like they were on the same day to be the y axis
+pseudomised %>% 
+  filter(screen_name %in% c("Sock1", "Sock2","suspect","unsuspicious14")) %>%
+  mutate(created_at = ymd_hms(created_at, tz="UTC"),
+         created_local = with_tz(created_at, tz=local_tz),
+         within_day_activity = ISOdatetime(2020,2,22, hour(created_local),
+                                           minute(created_local), second(created_local), 
+                                           tz= local_tz),
+         floored_day = floor_date(created_local, unit = "day")
+         ) %>%
+  filter(created_at >= left_limit_calc$left_lim) %>%
+  ggplot(aes(x = floored_day, y=within_day_activity, colour=screen_name)) + geom_point(size=0.2, alpha=0.3) +
+  theme_tufte() + ylab("account") + xlab("day of Tweet creation (NZ timezone)") +
+  scale_colour_colorblind() + facet_wrap(~screen_name, ncol=1) +
+  scale_y_datetime(breaks = graphbreaks, labels = date_format("%H:%M",tz = local_tz), limits = graphlimits, expand=c(0,0)) +
+  theme(legend.position = "none", plot.background = element_rect(fill = "#FAFAFA", colour = NA),
+        strip.background = element_rect(fill= "#FFFFFF", colour="#EFEFEF"), 
+        strip.placement = "inside", strip.text= element_text(face = "bold.italic"),
+        panel.background = element_rect(fill = "#FFFFFF", colour = "#FFFFFF"), 
+        panel.spacing = unit(1.5, "lines"))
+
+```
+
+Working with both the in-day and over time patterns helps to identify specific patterns of similarity and difference. In this case 2-dimensional times when the suspect account was highly active are similar to when the sock puppet accounts were active, though the overall posting frequencies of the sock puppet accounts were lower.
+
+This within day posting pattern can be aggregated to a general within day pattern for accounts
+
+```{r}
+pseudomised %>% 
+  filter(screen_name == "Sock1" | screen_name == "Sock2") %>%
+  mutate(created_at = ymd_hms(created_at, tz="UTC"),
+         created_local = with_tz(created_at, tz=local_tz),
+         within_day_activity = ISOdatetime(2020,2,22, hour(created_local),
+                                           minute(created_local), second(created_local), 
+                                           tz= local_tz)) %>% 
+  ggplot(aes(x = screen_name, y=within_day_activity, colour=screen_name)) + 
+  geom_quasirandom(size=0.2, alpha=0.5) +
+  scale_y_datetime(date_breaks = "6 hours",
+                   labels = date_format("%H:%M",tz = local_tz),
+                   limits = graphlimits, expand=c(0,0)) +
+  xlab("Account") + ylab("Hour of Day (NZ timezone)") + 
+  ggtitle("Temporal arrangement of Tweets") + theme_tufte() +
+  scale_colour_colorblind() 
+
+```
+
+Keeping in mind that a "day" is cyclical, so any activity just after midnight (local time) is part of the preceding days activity.
+
+
+```{r}
+pseudomised %>% 
+  filter(screen_name == "Sock1" | screen_name == "Sock2") %>%
+  mutate(created_at = ymd_hms(created_at, tz="UTC"),
+         created_local = with_tz(created_at, tz=local_tz), dummy_var = 1,
+         within_day_activity = ISOdatetime(2020,2,22, hour(created_local), minute(created_local), second(created_local), tz= local_tz)) %>%
+  ggplot(aes(y=within_day_activity, x=dummy_var, colour=screen_name)) +
+  geom_vline(xintercept=1, colour = colorblind_pal()(3)[3], alpha=0.3) +
+  geom_quasirandom(size=0.2, alpha=0.4) + scale_y_datetime(breaks = graphbreaks, labels = date_format("%H:%M",tz = local_tz), limits = graphlimits, expand=c(0,0)) +
+  xlab("Account") + ylab("Hour of Day (NZ timezone)") + 
+  ggtitle("Cyclical daily arrangement of Tweets") + theme_tufte() + facet_wrap(~screen_name) +
+  coord_polar(theta = "y") + xlim(0,1.5) + scale_colour_colorblind() +
+  theme(legend.position = "none", axis.line.y=element_blank(), axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank(), axis.title.y=element_blank(),
+        strip.background = element_rect(fill= "#FFFFFF", colour="#EFEFEF"), 
+        strip.placement = "inside", strip.text= element_text(face = "bold.italic"),
+        panel.background = element_rect(fill = "#FFFFFF", colour = "#FFFFFF"), 
+        panel.spacing = unit(1.5, "lines"),
+        plot.background = element_rect(fill = "#FAFAFA", colour = NA))
+
+```
+
+It is easy to rule out accounts from being sock puppets, if they do not share the same nightly minima (for most people between 1am and 4am local time), as the people behind the accounts are not sleeping at the same time. In this particular case, all the accounts are sleeping at the same time, which does not rule them out from being sock puppets, but cannot be treated as positive evidence as many people can be asleep in the same time period.
+
+As a side note, sleep period comparison can provide evidence that an account claiming to be in one country is unlikely to actually be so. In particular, New Zealand has a lightly populated timezone by world standards, and large gaps in time to the time zones that take an interest in our country.
+
+As well as combining data into one overall daily pattern, it can be aggregate as weekday/weekends or individual days of the week.
+
+```{r}
+pseudomised %>% 
+  filter(screen_name %in% c("Sock1", "Sock2","suspect","unsuspicious14")) %>%
+  mutate(created_at = ymd_hms(created_at, tz="UTC"),
+         created_local = with_tz(created_at, tz=local_tz),
+         within_day_activity = ISOdatetime(2020,2,22, hour(created_local),
+                                           minute(created_local), second(created_local), 
+                                           tz= local_tz),
+         wkdy=wday(created_local, label=TRUE)) %>%
+  ggplot(aes(x=wkdy, y=within_day_activity, colour=wkdy)) + geom_quasirandom(size=0.2, alpha=0.5) +
+  theme_tufte() + ylab("account") + xlab("day of Tweet creation (NZ timezone)") +
+  scale_colour_colorblind() + facet_wrap(~screen_name, ncol=1) +
+  scale_y_datetime(breaks = graphbreaks, labels = date_format("%H:%M",tz = local_tz), limits = graphlimits, expand=c(0,0)) +
+  theme(legend.position = "none", plot.background = element_rect(fill = "#FAFAFA", colour = NA),
+        strip.background = element_rect(fill= "#FFFFFF", colour="#EFEFEF"), 
+        strip.placement = "inside", strip.text= element_text(face = "bold.italic"),
+        panel.background = element_rect(fill = "#FFFFFF", colour = "#FFFFFF"), 
+        panel.spacing = unit(1.5, "lines"))
+
+```
+
+Patterns through every weekday tends also to be used as a "ruling out" indicator- if there is a shared clear absence of tweeting at a particular time, and that time is unusual for people in that timezone, that is evidence that the accounts share a reason for regularly not tweeting at that time. In this case there are similarities in use between the sock puppet and suspect accounts, but no highly characteristic gaps, so it is not very conclusive.
+
+All the time analysis so far has been relation to the general passage of time and life events influencing the ability to tweet, with some judgement about how shared those events are people different members of the population, then inferring the likelihood of being the same person
+
+In the case of sock puppet accounts there is a shared life event common only to the sock puppet accounts, that of being the same person. Being the same person imposes certain limitations on tweeting:
+
+* Tweets occur close in time as the person is swapping between accounts to undertake activity in both accounts.
+* Tweets do not occur at exactly the same time, because while a persons is tweeting under one identity they will not be able to tweet in the other identity until they swap.
+
+Taking an account of interest, in this case Sock1, I can compare how close together in time other accounts are tweeting in relation to the closest.
+
+I think it worth noting in passing that time isn't strictly a linear continuous thing any more, what I am expressing is an accounts relations to important moments (which I was also doing earlier in relation to things like common sleep times).
+
+
+```{r}
+offsets <- pseudomised %>%
+  mutate(created_at = ymd_hms(created_at, tz="UTC")) %>%
+  arrange(screen_name, sortorder, created_at) %>%
+  mutate(comparison_after= lead(created_at)) %>%
+  ungroup() %>%
+  mutate(comparison_before = if_else(screen_name == comparitor,created_at, as.POSIXct(NA)),
+         comparison_after = if_else(screen_name == comparitor,comparison_after, as.POSIXct(NA))) %>%
+  arrange(created_at, sortorder) %>%
+  fill(comparison_before, comparison_after) %>%
+  mutate(since = as.numeric(difftime(created_at,comparison_before, units = "secs")),
+         until = as.numeric(difftime(created_at, comparison_after, units = "secs")),
+         closest = if_else(abs(since) > abs(until), until, since))
+
+```
+
+```{r fig.height=3}
+closest_sock2 <- offsets %>%
+  filter(screen_name == "Sock2", closest > -600, closest < 600, !is.na(closest))
+closest_un14 <- offsets %>%
+  filter(screen_name == "unsuspicious14", closest > -600, closest < 600, !is.na(closest))
+
+g_s2 <- ggplot(closest_sock2, aes(x=closest, colour=screen_name)) + geom_histogram(binwidth = 1) + theme_tufte() +
+  ggtitle("Sock2 tweet times in relation to Sock1 tweet times (with 10 minutes)") +
+  xlab("Distance in seconds of tweet to nearest unrelated account tweet") + scale_colour_colorblind() +
+  theme(panel.background = element_rect(fill = "#FFFFFF", colour = "#FFFFFF"), 
+        panel.spacing = unit(1.5, "lines"), legend.position = "none",
+        plot.background = element_rect(fill = "#FAFAFA", colour = NA))+ ylim(0,10)
+g_u14 <- ggplot(closest_un14, aes(x=closest, colour=screen_name)) + geom_histogram(binwidth = 1, colour=colorblind_pal()(2)[2]) +
+  ggtitle("Innocent account tweet times in relation to Sock1 tweet times (with 10 minutes)") +
+  xlab("Distance in seconds of tweet to nearest unrelated account tweet") +  theme_tufte() +
+  theme(panel.background = element_rect(fill = "#FFFFFF", colour = "#FFFFFF"), 
+        panel.spacing = unit(1.5, "lines"), legend.position = "none",
+        plot.background = element_rect(fill = "#FAFAFA", colour = NA))+ ylim(0,10)
+
+g_s2/g_u14
+```
+
+This is specifically comparing tweets within 10 minutes between the two accounts, as that seemed a good time threshold for exploring a relationship that is expected to be close in time. When comparing the relative timing of tweets between accounts and Sock1, four things differ between the sock puppet account and an unrelated non-sock puppet account stand out to me:
+
+* There is gap at zero in the case of the sock puppet. For around 10 seconds either side of a Sock1 tweet, Sock2 never posts (as the person has to switch accounts)
+* There is a surge in the sock puppet account once it changes accounts (within around a minute). This captures the behaviour that the person is swapping accounts in order to use the other account causing a surge.
+* There are more tweets within 10 minutes between the sock accounts than between a sock account and another account. This again reflects the swapping accounts to use the other account. I am not doing anything more detailed with this particular metric on this occasion, but suspect something could usefully be done as a measure like tweets within 10 minutes as a percentage of total tweets.
+* The sock puppet account is asymmetric. This reflects a human being slipping into a habit about which account they use first, creating an imbalance between greater than and less than zero. I am not exploring this metric further on this occasion either. 
+
+Focusing on the the aspects of space around zero and clump near the middle, these can be automatically measured.
+
+```{r fig.height=3}
+closest_sock2 <- offsets %>%
+  filter(screen_name == "Sock2", closest > -600, closest < 600, !is.na(closest))
+closest_un14 <- offsets %>%
+  filter(screen_name == "unsuspicious14", closest > -600, closest < 600, !is.na(closest))
+
+g_s2 <- ggplot(closest_sock2, aes(x=closest, colour=screen_name)) + geom_histogram(binwidth = 1) + theme_tufte() +
+  ggtitle("Sock2 tweet times in relation to Sock1 tweet times (with 10 minutes)") +
+  xlab("Distance in seconds of tweet to nearest unrelated account tweet") + scale_colour_colorblind() +
+  theme(panel.background = element_rect(fill = "#FFFFFF", colour = "#FFFFFF"), 
+        panel.spacing = unit(1.5, "lines"), legend.position = "none",
+        plot.background = element_rect(fill = "#FAFAFA", colour = NA))+ ylim(0,10) +
+  annotate("line", x=c(-14,8), y=c(8,8), colour=colorblind_pal()(3)[3]) +
+  annotate("text", x=18, y=8, label="space near zero", colour=colorblind_pal()(3)[3], hjust=0) +
+  annotate("line", x=c(-129,178), y=c(10,10), colour=colorblind_pal()(4)[4]) +
+  annotate("text", x=188, y=10, label="middle 50% of data", colour=colorblind_pal()(4)[4], hjust=0)
+
+g_u14 <- ggplot(closest_un14, aes(x=closest, colour=screen_name)) + geom_histogram(binwidth = 1, colour=colorblind_pal()(2)[2]) +
+  ggtitle("Innocent account tweet times in relation to Sock1 tweet times (with 10 minutes)") +
+  xlab("Distance in seconds of tweet to nearest unrelated account tweet") +  theme_tufte() +
+  theme(panel.background = element_rect(fill = "#FFFFFF", colour = "#FFFFFF"), 
+        panel.spacing = unit(1.5, "lines"), legend.position = "none",
+        plot.background = element_rect(fill = "#FAFAFA", colour = NA))+ ylim(0,10) +
+  annotate("line", x=c(-1, 1), y=c(8,8), colour=colorblind_pal()(3)[3]) +
+  annotate("text", x=11, y=8, label="space near zero", colour=colorblind_pal()(3)[3], hjust=0) +
+  annotate("line", x=c(-257,204), y=c(10,10), colour=colorblind_pal()(4)[4]) +
+  annotate("text", x=214, y=10, label="middle 50% of data", colour=colorblind_pal()(4)[4], hjust=0)
+
+g_s2/g_u14
+```
+
+
+As the space near zero is larger in the sock puppet case, and the middle 50% of the data occupies a smaller range in the sock puppet case, dividing the space near zero (measured in seconds) by the range of the middle 50% of the data (measured in seconds) produces a single measure that is higher for sock puppet accounts than unrelated accounts.
+
+As a sock puppet detection mechanism, this is vulnerable to having an accomplice tweet at the same time to distort the metric, but:
+
+* As I only came up with this, I do not expect people to be deliberately countering this yet.
+* It is entire possible to take these observations and construct a less sensitive analysis (both in the good and bad sense).
+* That would now be two people sharing an account which is a different (though closely related) problem space anyway.
+
+Both the space around zero and the range of the middle half of the data are sensitive to sample size- if there only four tweets in 10 minutes there might be a very large random gap around zero, but it would not mean much in terms of identifying the two accounts as sock puppets.
+
+So, comparing sample size with the single sock puppet measure - the Key Sock puppet Indicator, gives a result like this 
+
+```{r}
+account_summaries <- offsets %>% 
+  filter(closest > -600, closest < 600, !is.na(closest), screen_name != "Sock1") %>%
+  group_by(screen_name) %>%
+  summarise(seconds_before_without = max(closest[closest <=0]),
+            seconds_after_without = min(closest[closest >=0]),
+            before_quartile = quantile(closest, probs=0.25),
+            after_quartile = quantile(closest, probs=0.75),
+            silence_at_zero = seconds_after_without - seconds_before_without,
+            central_half = after_quartile - seconds_after_without,
+            key_sockpuppet_indicator = silence_at_zero/central_half,
+            sample_size = n()) %>%
+  mutate(account = ifelse(sample_size > 450, screen_name, ""))
+ggplot(account_summaries, aes(x=sample_size, y=key_sockpuppet_indicator,label=account)) + 
+  geom_point() + geom_label_repel() + theme_tufte()
+```
+
+
+The suspected-linked and the known sock puppet accounts are separate from the rest of the accounts that were being boosted, but this representation by itself doesn't indicate how likely these accounts are to be sock puppets (with the likelihood changing with sample size).
+
+The normal range for a given sample size can be calculated through a simulation test. If there is no relationship between the two accounts, then posts in one account are not influenced by posts in the other. This can be represent by simulated the difference between two unrelated accounts through making a random draw of the appropriate sample size across the time period (10 minutes each side of zero) and calculating the key sock puppet indicator. By doing this repeatedly, it generates the range of expected key sock puppet indicators for a given number of tweets within 10 minutes (the sample size). As I am interested if observed values are outside the expected range, I am expressing that as "for a given number of replications, what is the maximum value seen at that sample size" and calculating out the values for several different replications, depending on how sure people want to be that it is a sock puppet.
+
+* 400 - The maximum value I got in 400 random tests, which means I am extremely confident there would not be a more sock puppet like account if you compared 100 innocent accounts with a test account (there is a strong buffer zone here). As it is easy to compare a lot of accounts on the Internet, I personally find this threshold a little low for my comfort.
+* 4,000 - The maximum value I got in 4,000 random tests, which means I am extremely confident there would not be a more sock puppet like account if you compared 1,000 innocent accounts with a test account. I would be comfortable saying any comparison exceeding this threshold has very strong likelihood that the two accounts are a sock puppet.
+* 4,0000 - If the comparison of two accounts exceeds this threshold, they are going to be sock-puppets.
+* 400,000 - I only included 400,000, which took over 40 hours to process, as there are 330,000 active New Zealand Twitter accounts. So if you compared every single innocent New Zealand Twitter account (and they were at this sample size) you would not expect to see a number this high.
+
+Because the simulation takes over 40 hours to run on my computer, I am including the code separately, as I do not want the code to run when I am generating the final form of this document. I saved the results in a set of csv files that is available as a companion files with this (also for others to draw on in their own analyses). Also because it took so long to calculate, I only used sample groups in steps of 10, and am just assuming you will not learn much interesting from very small sample sizes.
+
+```{r warnings=FALSE, message=FALSE}
+b1 <- read.csv("bounds400.csv", stringsAsFactors = F)
+b2 <- read.csv("bounds4000.csv", stringsAsFactors = F)
+b3 <- read.csv("bounds40000.csv", stringsAsFactors = F)
+b4 <- read.csv("bounds400000.csv", stringsAsFactors = F)
+
+
+
+m1 <- b1 %>% 
+  mutate(sample_size = samplesize * 10, 
+         replications="000400",
+         smoothed  = (lag(upper_bound) + upper_bound + lead(upper_bound))/3)
+m2 <- b2 %>% 
+  mutate(sample_size = samplesize * 10, 
+         replications="004000",
+         smoothed  = (lag(upper_bound) + upper_bound + lead(upper_bound))/3)
+m3 <- b3 %>% 
+  mutate(sample_size = samplesize * 10, 
+         replications="040000",
+         smoothed  = (lag(upper_bound) + upper_bound + lead(upper_bound))/3)
+m4 <- b4 %>% 
+  mutate(sample_size = samplesize * 10, 
+         replications="400000",
+         smoothed  = (lag(upper_bound) + upper_bound + lead(upper_bound))/3)
+
+account_summaries <- offsets %>% 
+  filter(closest > -600, closest < 600, !is.na(closest), screen_name != "Sock1") %>%
+  group_by(screen_name) %>%
+  summarise(seconds_before_without = max(closest[closest <=0]),
+            seconds_after_without = min(closest[closest >=0]),
+            before_quartile = quantile(closest, probs=0.25),
+            after_quartile = quantile(closest, probs=0.75),
+            silence_at_zero = seconds_after_without - seconds_before_without,
+            central_half = after_quartile - seconds_after_without,
+            key_sockpuppet_indicator = silence_at_zero/central_half,
+            sample_size = n()) %>%
+  mutate(account = ifelse(sample_size > 450, screen_name, ""))
+ 
+bind_rows(m1,m2,m3,m4) %>% filter(sample_size < 1400) %>%
+  ggplot(aes(x=sample_size, y=smoothed, colour=factor(replications))) + geom_line() +
+  geom_point(data=account_summaries, aes(x=sample_size, y=key_sockpuppet_indicator, colour=NULL)) +
+  coord_cartesian(ylim=c(0,0.4)) + theme_tufte() +
+  ggtitle("40 account Key Sock puppet Indicators in relation to maximum
+expected level seen in a given number of comparisons") +
+  geom_label_repel(data=account_summaries, aes(x=sample_size, y=key_sockpuppet_indicator,
+                                               colour=NULL, label=account)) +
+  scale_colour_colorblind(name="max KSI given\nsamplesize") + 
+  ylab("Sock puppet Rating")
+```
+
+
+The graph has been limited on the vertical axis to only show the zone where there were account results, rather than extending to around 10.
+
+The two accounts that are unequivocally sock puppet accounts from the same person as Sock1 are the suspect account and the Sock2 account. Suspect is at a level that you would need to compare somewhere in the order of magnitude of a billion accounts to see an innocent account that looked that much like a sock puppet, while Sock2 is even less likely to be innocent.
+
+
+
+
+
